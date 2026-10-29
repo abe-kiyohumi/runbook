@@ -1,5 +1,6 @@
 /* ランニング手帳 — standalone version. All data stays on this phone (localStorage). No AI service is used. */
 "use strict";
+const APP_VERSION = "1.6";
 
 /* ---------- constants ---------- */
 const TYPES = {
@@ -587,7 +588,8 @@ function openRunForm(r, existingId){
     <div class="field"><label for="fMemo">メモ（天気・体調など）</label><textarea id="fMemo" rows="2">${esc(r.memo||"")}</textarea></div>
     <div class="note small" id="fErr" hidden></div>
     <button class="btn primary" id="fSave">保存</button>
-    ${r._read && lastOcrText ? `<details class="card"><summary class="small" style="cursor:pointer;font-weight:700">読み取った文字を見る（うまく読めないときの確認用）</summary>
+    <div class="small muted" style="text-align:center">アプリのバージョン ${APP_VERSION}</div>
+    ${r._read && lastOcrText ? `<details class="card"><summary class="small" style="cursor:pointer;font-weight:700">読み取った文字を見る（うまく読めないときの確認用・v${APP_VERSION}）</summary>
       <div class="small muted">読み取りがうまくいかないときは、この文字をコピーして改善の相談に使えます。</div>
       <button class="btn ghost" id="rawCopy" type="button">文字をコピー</button>
       <textarea id="rawTxt" rows="8" readonly style="width:100%;font-size:12px">${esc(lastOcrText)}</textarea></details>` : ""}`, sh=>{
