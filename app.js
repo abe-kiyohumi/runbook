@@ -1,6 +1,6 @@
 /* ランニング手帳 — standalone version. All data stays on this phone (localStorage). No AI service is used. */
 "use strict";
-const APP_VERSION = "1.8";
+const APP_VERSION = "1.9";
 
 /* ---------- constants ---------- */
 const TYPES = {
@@ -389,7 +389,7 @@ async function prepImage(file){
       if(!info[y]){ y++; continue; }
       let y2 = y; while(y2+1<Hc && info[y2+1]) y2++;
       const h = y2-y+1;
-      if(h >= W*0.022 && h <= W*0.08){
+      if(h >= W*0.022 && h <= W*0.16){
         const x0 = Math.min(...info.slice(y,y2+1).map(o=>o.b0)), th = info[Math.floor((y+y2)/2)].th;
         const cw = Math.round(W*0.32), S = 3;
         const bc = document.createElement("canvas"); bc.width = cw*S; bc.height = h*S + 40;
@@ -424,30 +424,52 @@ function barPace(t){
   if(d.length===5) return ok(+d.slice(0,2), d.slice(3,5)) || ok(+d[0], d.slice(2,4));
   return null;
 }
-async function ocrScreenshot(file, onProgress){
-  await loadTesseract();
-  let done = 0, parts = 1;
-  const worker = await Tesseract.createWorker(["jpn","eng"], 1, {logger: m => { if(m.status==="recognizing text") onProgress(Math.round((done + m.progress)/parts*100)); }});
-  try{
-    const {pieces, bars} = await prepImage(file); parts = pieces.length + (bars.length ? 1 : 0);
-    let text = "";
-    for(const c of pieces){ const { data } = await worker.recognize(c); text += data.text + "\n"; done++; }
-    const out = parseMiFitness(text);
-    // km毎ペース：バーの中の文字を1本ずつ読む
-    let barText = "";
-    if(bars.length){
-      await worker.setParameters({tessedit_pageseg_mode: "7"});
-      const sp = [];
-      for(const bc of bars){
-        const { data } = await worker.recognize(bc); const t = normalizeOcr(data.text).replace(/\s+/g,"");
-        barText += t + "\n";
-        const v = barPace(t); if(v) sp.push(v);
-      }
-      if(sp.length>=2 && (!out.distanceKm || sp.length <= Math.ceil(out.distanceKm)+1)) out.splits = sp;
+async function ocrOne(worker, file, setDone){
+  const {pieces, bars} = await prepImage(file);
+  setDone(pieces.length + (bars.length ? 1 : 0));
+  await worker.setParameters({tessedit_pageseg_mode: "3"});
+  let text = "";
+  for(const c of pieces){ const { data } = await worker.recognize(c); text += data.text + "\n"; setDone(); }
+  const out = parseMiFitness(text);
+  // km毎ペース：バーの中の文字を1本ずつ読む
+  let barText = "";
+  if(bars.length){
+    await worker.setParameters({tessedit_pageseg_mode: "7"});
+    const sp = [];
+    for(const bc of bars){
+      const { data } = await worker.recognize(bc); const t = normalizeOcr(data.text).replace(/\s+/g,"");
+      barText += t + "\n";
+      const v = barPace(t); if(v) sp.push(v);
     }
-    lastOcrText = text + (barText ? "\n--- km毎のバー ---\n" + barText : "");
-    return out;
+    if(sp.length>=2) out._barSplits = sp;
+    setDone();
+  }
+  return {out, text: text + (barText ? "\n--- km毎のバー ---\n" + barText : "")};
+}
+// 複数の画像（全体のスクショ＋拡大したスクショ）を読み、項目ごとにまとめる
+async function ocrScreenshots(files, onProgress){
+  await loadTesseract();
+  let unitsDone = 0, unitsAll = 1, fileIdx = 0;
+  const worker = await Tesseract.createWorker(["jpn","eng"], 1, {logger: m => { if(m.status==="recognizing text") onProgress(fileIdx, Math.round((unitsDone + m.progress)/unitsAll*100)); }});
+  const results = [];
+  try{
+    for(fileIdx=0; fileIdx<files.length; fileIdx++){
+      unitsDone = 0; unitsAll = 1;
+      results.push(await ocrOne(worker, files[fileIdx], n => { if(n!=null){ unitsAll = n; } else unitsDone++; }));
+    }
   } finally { worker.terminate(); }
+  lastOcrText = results.map((r,i)=>`=== 画像${i+1} ===\n${r.text}`).join("\n");
+  // いちばん多く読めた画像を基準にし、足りない項目をほかの画像で埋める
+  const count = o => Object.keys(o).filter(k=>!k.startsWith("_")).length;
+  const order = results.map(r=>r.out).sort((a,b)=>count(b)-count(a));
+  const merged = {};
+  for(const o of order) for(const [k,v] of Object.entries(o)) if(!k.startsWith("_") && k!=="splits" && v!=null && merged[k]==null) merged[k] = v;
+  // km毎ペースは、いちばん本数の多いもの（距離から見てありえる本数まで）
+  const maxN = merged.distanceKm ? Math.ceil(merged.distanceKm)+1 : 99;
+  const cands = order.flatMap(o=>[o._barSplits, o.splits]).filter(x=>x && x.length>=2 && x.length<=maxN);
+  if(cands.length) merged.splits = cands.sort((a,b)=>b.length-a.length)[0];
+  if(merged.distanceKm==null && merged.durationSec && merged.paceSec) merged.distanceKm = Math.round(merged.durationSec/merged.paceSec*100)/100;
+  return merged;
 }
 function normalizeOcr(t){
   const circ="⓪①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳";
@@ -496,20 +518,26 @@ function parseMiFitness(raw){
   if(zt.length===5){ const [warmup,intensive,aerobic,anaerobic,vo2max]=zt; out.hrZones={warmup,intensive,aerobic,anaerobic,vo2max}; i=k; }
   // pace card (avg / best) then splits
   const pc=find(i,l=>(l.match(/\d{1,2}\s*'\s*\d{2}/g)||[]).length>=2?1:null,10); if(pc) i=pc.k+1;
-  const sp=[];
-  for(k=i;k<Math.min(lines.length,i+25);k++){
-    if(/ケイデンス|時間|km\|/.test(C[k])&&sp.length) break;
-    const c = C[k].replace(/"/g,"");
-    const m = c.match(/(\d{1,3})'(\d{2})/); if(!m) continue;
-    const idx = sp.length+1, pre = c.slice(0, m.index), pd = (pre.match(/\d+/g)||[]).pop();
-    let mins;
-    if(pd!=null && +pd===idx) mins = +m[1];                                           // 「1 5'28」
-    else if(pd==null && m[1].length>=2 && m[1].startsWith(String(idx))) mins = +m[1].slice(String(idx).length); // 「15'28」
-    else continue;                                                                       // 番号のないペース（グラフの目盛りなど）は使わない
-    const v = mins*60 + +m[2];
-    if(v>=150 && v<=900){ sp.push(v); i=k+1; }
-  }
-  if(sp.length>=2) out.splits=sp;
+  // km毎ペース：「1 5'28"」「2 5'40"」…と番号が1から続く行を探す
+  const scanSplits = (from, to) => {
+    const sp=[]; let end=from;
+    for(let q=from;q<to;q++){
+      if(/ケイデンス|時間|km\|/.test(C[q])&&sp.length) break;
+      const c = C[q].replace(/"/g,"");
+      const m = c.match(/(\d{1,3})'(\d{2})/); if(!m) continue;
+      const idx = sp.length+1, pre = c.slice(0, m.index), pd = (pre.match(/\d+/g)||[]).pop();
+      let mins;
+      if(pd!=null && +pd===idx) mins = +m[1];                                           // 「1 5'28」
+      else if(pd==null && m[1].length>=2 && m[1].startsWith(String(idx))) mins = +m[1].slice(String(idx).length); // 「15'28」
+      else continue;                                                                       // 番号のないペース（グラフの目盛りなど）は使わない
+      const v = mins*60 + +m[2];
+      if(v>=150 && v<=900){ sp.push(v); end=q+1; }
+    }
+    return {sp, end};
+  };
+  let spr = scanSplits(i, Math.min(lines.length, i+25));
+  if(spr.sp.length<2) spr = scanSplits(0, lines.length);
+  if(spr.sp.length>=2){ out.splits = spr.sp; if(spr.end>i) i = spr.end; }
   const notVo = l => !/m[il1|]\s*[\/|]|kg|ml/i.test(l);
   // cadence: 2 ints in 100-260 (average ≤ max)
   const cad=find(i,(l)=>{ if(T.test(l)||!notVo(l)) return null; const n=ints(l); const c=n.filter(x=>x>=100&&x<=260); return c.length>=2&&n.length<=3&&c[0]<=c[1]&&c[1]-c[0]<=80?c:null;},300);
@@ -535,19 +563,18 @@ function parseMiFitness(raw){
 
 function openNewRun(defDate){
   openSheet(`<h3>ランを記録</h3>
-    <label class="drop" for="img"><input type="file" id="img" accept="image/*">
+    <label class="drop" for="img"><input type="file" id="img" accept="image/*" multiple>
       <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/></svg>
       <b>Mi Fitnessのスクリーンショットを選ぶ</b>
-      <span class="small muted">ワークアウト詳細の画面をそのまま。読み取りはスマホの中で行います</span></label>
+      <span class="small muted">何枚でも選べます。全体の画面に加えて、「km毎のペース」や「トレーニング効果」を拡大したスクショも一緒に選ぶと読み取りが正確になります</span></label>
     <div id="readArea"></div>
     <button class="btn ghost" id="manual">手入力で記録する</button>`, sh=>{
     $("manual").onclick = ()=>openRunForm({date:defDate||logicalToday()});
     $("img").onchange = async e=>{
-      const f = e.target.files[0]; if(!f) return;
-      const url = URL.createObjectURL(f);
-      $("readArea").innerHTML = `<img class="thumb" src="${url}" alt="選んだ画像"><div class="banner"><span class="spin"></span><span id="rsTxt">読み取りの準備をしています（初回は文字データの読み込みで少し時間がかかります）</span></div>`;
+      const files = [...e.target.files]; if(!files.length) return;
+      $("readArea").innerHTML = `<div class="row" style="gap:6px;overflow-x:auto">${files.map((f,i)=>`<img src="${URL.createObjectURL(f)}" alt="画像${i+1}" style="height:120px;width:auto;border-radius:8px;flex:none">`).join("")}</div><div class="banner"><span class="spin"></span><span id="rsTxt">読み取りの準備をしています（初回は文字データの読み込みで少し時間がかかります）</span></div>`;
       let ex = {}, failed = false;
-      try{ ex = await ocrScreenshot(f, p=>{ const t = $("rsTxt"); if(t && p>=0) t.textContent = `文字を読み取っています ${p}%`; }); }
+      try{ ex = await ocrScreenshots(files, (i,p)=>{ const t = $("rsTxt"); if(t && p>=0) t.textContent = files.length>1 ? `画像${i+1}/${files.length}を読み取っています ${Math.min(100,p)}%` : `文字を読み取っています ${Math.min(100,p)}%`; }); }
       catch(err){ failed = true; }
       const found = Object.keys(ex).length;
       openRunForm({...ex, date: logicalDateOf(ex.startAt) || defDate || logicalToday(), _read: failed ? "fail" : found ? "ok" : "none"});
