@@ -1,6 +1,6 @@
 /* ランニング手帳 — standalone version. All data stays on this phone (localStorage). No AI service is used. */
 "use strict";
-const APP_VERSION = "1.7";
+const APP_VERSION = "1.8";
 
 /* ---------- constants ---------- */
 const TYPES = {
@@ -443,7 +443,7 @@ async function ocrScreenshot(file, onProgress){
         barText += t + "\n";
         const v = barPace(t); if(v) sp.push(v);
       }
-      if(sp.length && (!out.distanceKm || sp.length <= Math.ceil(out.distanceKm)+1)) out.splits = sp;
+      if(sp.length>=2 && (!out.distanceKm || sp.length <= Math.ceil(out.distanceKm)+1)) out.splits = sp;
     }
     lastOcrText = text + (barText ? "\n--- km毎のバー ---\n" + barText : "");
     return out;
@@ -502,30 +502,30 @@ function parseMiFitness(raw){
     const c = C[k].replace(/"/g,"");
     const m = c.match(/(\d{1,3})'(\d{2})/); if(!m) continue;
     const idx = sp.length+1, pre = c.slice(0, m.index), pd = (pre.match(/\d+/g)||[]).pop();
-    let mins = +m[1];
-    if(pd!=null && +pd===idx){}                                            // 「1 5'28」
-    else if(m[1].length>=2 && m[1].startsWith(String(idx))) mins = +m[1].slice(String(idx).length); // 「15'28」
-    else if(pd!=null && +pd!==idx) continue;
+    let mins;
+    if(pd!=null && +pd===idx) mins = +m[1];                                           // 「1 5'28」
+    else if(pd==null && m[1].length>=2 && m[1].startsWith(String(idx))) mins = +m[1].slice(String(idx).length); // 「15'28」
+    else continue;                                                                       // 番号のないペース（グラフの目盛りなど）は使わない
     const v = mins*60 + +m[2];
     if(v>=150 && v<=900){ sp.push(v); i=k+1; }
   }
-  if(sp.length) out.splits=sp;
-  // cadence: first line with 2 ints in 100-260
-  const cad=find(i,(l)=>{ if(T.test(l)) return null; const n=ints(l); const c=n.filter(x=>x>=100&&x<=260); return c.length>=2&&n.length<=3&&c[0]<=c[1]?c:null;},200);
+  if(sp.length>=2) out.splits=sp;
+  const notVo = l => !/m[il1|]\s*[\/|]|kg|ml/i.test(l);
+  // cadence: 2 ints in 100-260 (average ≤ max)
+  const cad=find(i,(l)=>{ if(T.test(l)||!notVo(l)) return null; const n=ints(l); const c=n.filter(x=>x>=100&&x<=260); return c.length>=2&&n.length<=3&&c[0]<=c[1]&&c[1]-c[0]<=80?c:null;},300);
   if(cad){ out.cadence=cad.r[0]; out.maxCadence=cad.r[1]; i=cad.k+1; }
-  // stride: next line with 2 ints 30-250 (avg<max)
-  const st=find(i,(l)=>{ if(T.test(l)) return null; const n=ints(l); const c=n.filter(x=>x>=30&&x<=250); return c.length>=2&&n.length<=3&&c[0]<=c[1]?c:null;},60);
+  // stride: 2 ints 40-200 right after cadence (average ≤ max, close together)
+  const st=find(i,(l)=>{ if(T.test(l)||!notVo(l)) return null; const n=ints(l); const c=n.filter(x=>x>=40&&x<=200); return c.length>=2&&n.length<=3&&c[0]<=c[1]&&c[1]-c[0]<=40?c:null;},60);
   if(st){ out.strideCm=st.r[0]; i=st.k+1; }
-  // training effect: a lone d.d
-  const te=find(i,(l,c)=>{const m=c.match(/^[^\d]{0,3}([0-5])\.(\d)[^\d]{0,3}$/); return m?+(m[1]+"."+m[2]):null;},80);
-  if(te){ out.trainingEffect=te.r; i=te.k+1;
-    const lab = find(te.k,(l,c)=>{ const m=c.match(/大幅に向上|大きく向上|向上|維持|回復|過負荷|効果なし|最小限/); return m?m[0]:null; },3);
-    if(lab) out.trainingEffectLabel = lab.r; }
-  // vo2max + load: line with ml or two ints where first 20-90
-  const vo=find(i,(l)=>{ const m=l.match(/(\d{2})\s*m[il1]/i); const n=ints(l); if(m){const load=n.filter(x=>x!==+m[1]&&x<=1000).pop(); return {v:+m[1],load};} return null;},200);
-  if(vo){ out.vo2max=vo.r.v; if(vo.r.load!=null) out.trainingLoad=vo.r.load; i=vo.k+1; }
-  const rec=find(i,(l)=>{const m=l.match(/^\D{0,2}(\d{1,3})\s*\S*\s*\+\s*(\d+)/)||l.match(/(\d{1,3})\s*時間/); return m&&+m[1]<=200?+m[1]:null;},30);
-  if(rec){ out.recoveryHours=rec.r; const v = lines[rec.k].match(/([+\-])\s*(\d{1,3})(?!\d)/); if(v) out.vitality = (v[1]==="-"?-1:1)*+v[2]; }
+  // vo2max + load: the "ml/kg/min" line
+  const vo=find(cad?cad.k+1:i,(l)=>{ const m=l.match(/(\d{2})\s*(?:m[il1|]|ml)/i); if(!m) return null; const n=ints(l.slice(l.indexOf(m[0])+m[0].length)); const load=n.filter(x=>x>=1&&x<=1000).pop(); return {v:+m[1],load};},300);
+  if(vo){ if(+vo.r.v>=20 && +vo.r.v<=90) out.vo2max=vo.r.v; if(vo.r.load!=null) out.trainingLoad=vo.r.load; }
+  // effect value: a lone d.d between stride and the VO2 line
+  const teFrom = st ? st.k+1 : (cad ? cad.k+1 : i), teTo = vo ? vo.k : lines.length;
+  for(let q=teFrom;q<teTo;q++){ const m=C[q].match(/^[^\d]{0,4}([0-5])[.,](\d)[^\d]{0,4}$/); if(m){ out.trainingEffect=+(m[1]+"."+m[2]); break; } }
+  // recovery hours + vitality: "27 時間 +28"
+  const rec=find(vo?vo.k+1:teFrom,(l)=>{const m=l.match(/^\D{0,3}(\d{1,3})\s*\D{0,6}\s*([+\-])\s*(\d{1,3})(?!\d)/)||l.match(/(\d{1,3})\s*時間/); return m&&+m[1]<=200?m:null;},30);
+  if(rec){ out.recoveryHours=+rec.r[1]; if(rec.r[3]!=null) out.vitality=(rec.r[2]==="-"?-1:1)*+rec.r[3]; }
   // fallbacks
   if(out.distanceKm==null&&out.durationSec&&out.paceSec) out.distanceKm=Math.round(out.durationSec/out.paceSec*100)/100;
   if(out.paceSec==null&&out.distanceKm&&out.durationSec) out.paceSec=Math.round(out.durationSec/out.distanceKm);
