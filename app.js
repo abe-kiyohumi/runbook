@@ -317,7 +317,7 @@ function openRun(id){
     </div>
     ${splits.length?`<div class="card"><div class="flabel">km毎のペース</div><div class="splits">${splits.map((s,i)=>`<div class="split num"><span>${i+1}</span><div class="bar"><i style="width:${30+70*(maxS-s)/Math.max(1,maxS-minS)}%"></i></div><span>${fmtPace(s)}</span></div>`).join("")}</div></div>`:""}
     ${zTot?`<div class="card"><div class="flabel">心拍ゾーン（Mi Fitness判定）</div><div class="splits">${zlist.filter(([z])=>zones[z]).map(([z,l])=>`<div class="split num" style="grid-template-columns:96px minmax(0,1fr) 48px"><span>${l}</span><div class="bar"><i style="width:${zones[z]/zTot*100}%;background:var(--c-threshold)"></i></div><span>${fmtDur(zones[z])}</span></div>`).join("")}</div><div class="small muted">手首の光学式心拍のため、明らかに外れた値はまとめで除外します。</div></div>`:""}
-    <div class="small muted num">${[r.vo2max?`VO2max ${r.vo2max}`:"", r.trainingLoad?`トレーニング負荷 ${r.trainingLoad}`:"", r.trainingEffect?`有酸素効果 ${r.trainingEffect}`:"", r.recoveryHours?`回復 ${r.recoveryHours}時間`:"", r.calories?`${r.calories} kcal`:"", r.steps?`${r.steps}歩`:""].filter(Boolean).join(" ・ ")}</div>
+    <div class="small muted num">${[r.vo2max?`VO2max ${r.vo2max}`:"", r.trainingLoad?`トレーニング負荷 ${r.trainingLoad}`:"", r.trainingEffect?`トレーニング効果 ${r.trainingEffect}${r.trainingEffectLabel?" "+esc(r.trainingEffectLabel):""}`:"", r.recoveryHours?`回復 ${r.recoveryHours}時間`:"", r.vitality!=null?`活力スコア ${r.vitality>0?"+":""}${r.vitality}`:"", r.calories?`${r.calories} kcal`:"", r.steps?`${r.steps}歩`:""].filter(Boolean).join(" ・ ")}</div>
     ${feelFields(r)}
     <div class="field"><label for="fMemo">メモ</label><textarea id="fMemo" rows="2">${esc(r.memo||"")}</textarea></div>
     <div class="btns"><button class="btn primary" id="rSave">保存</button><button class="btn ghost" id="rEdit">数値を直す</button><button class="btn danger" id="rDel">削除</button></div>`, sh=>{
@@ -374,7 +374,23 @@ async function prepImage(file){
     g.drawImage(bmp, 0, cuts[i]/scale, bmp.width, c.height/scale, 0, 0, W, c.height);
     // 白黒にする。色の濃い部分（緑のバーなど）は黒にして、上の白い文字を読めるようにする
     const img = g.getImageData(0,0,W,c.height), d = img.data;
-    for(let k=0;k<d.length;k+=4){ const r=d[k],gg=d[k+1],b=d[k+2]; const mx=Math.max(r,gg,b), mn=Math.min(r,gg,b); const v = (mx-mn>60) ? 0 : (r*0.299+gg*0.587+b*0.114); d[k]=d[k+1]=d[k+2]=v; }
+    const Hc = c.height;
+    for(let y=0;y<Hc;y++){
+      // 色付きのバー（km毎ペースの緑のバーなど）が横切る行を探す。白い文字が途切れても1本のバーとみなせるよう、短い切れ目は許す
+      const row = y*W*4; let best0=-1, best1=-1, run0=-1, last=-99, gap=0, barLumSum=0, barN=0;
+      for(let x=0;x<W;x++){
+        const k=row+x*4; const mx=Math.max(d[k],d[k+1],d[k+2]), mn=Math.min(d[k],d[k+1],d[k+2]);
+        if(mx-mn>60){ if(run0<0 || x-last>40) run0=x; last=x; if(last-run0 > best1-best0){ best0=run0; best1=last; } barLumSum += d[k]*0.299+d[k+1]*0.587+d[k+2]*0.114; barN++; }
+      }
+      const bar = best1-best0 > W*0.25;
+      const th = bar ? (barLumSum/barN + 255)/2 : 0;
+      for(let x=0;x<W;x++){
+        const k=row+x*4, lum=d[k]*0.299+d[k+1]*0.587+d[k+2]*0.114;
+        // バーの中：白い文字→黒、バーの色→白
+        const v = (bar && x>=best0 && x<=best1) ? (lum>th ? 0 : 255) : lum;
+        d[k]=d[k+1]=d[k+2]=v;
+      }
+    }
     g.putImageData(img,0,0);
     out.push(c);
   }
@@ -410,7 +426,7 @@ function parseMiFitness(raw){
   const P=/(\d{1,2})\s*'\s*(\d{2})\s*"?/;
   const sec=m=>+m[1]*3600+ +m[2]*60+ +m[3];
   // date & start
-  for(const c of C){const m=c.match(/(20\d\d)[\/.\-年](\d{1,2})[\/.\-月](\d{1,2})日?(\d{1,2}):(\d{2})/); if(m){out.startAt=`${m[1]}-${pad(m[2])}-${pad(m[3])} ${pad(m[4])}:${m[5]}`;break;}}
+  for(const l of [...lines, ...C]){ const m = l.match(/(20[2-3]\d)\s*[\/.\-年1l|]\s*(1[0-2]|0?[1-9])\s*[\/.\-月1l|]\s*(3[01]|[12]\d|0?[1-9])\s*日?\s*([01]?\d|2[0-3])\s*[:;.]\s*([0-5]\d)/); if(m){ out.startAt=`${m[1]}-${pad(m[2])}-${pad(m[3])} ${pad(m[4])}:${m[5]}`; break; } }
   // workout time = first h:mm:ss
   let di=lines.findIndex(l=>T.test(l));
   if(di>=0){
@@ -436,15 +452,22 @@ function parseMiFitness(raw){
   if(hr){ out.avgHr=out.avgHr||hr.r[0]; out.maxHr=hr.r[1]; i=hr.k+1; }
   // zones: next 5 time strings
   const zt=[];let k=i;
-  for(;k<lines.length&&zt.length<5;k++){ if(P.test(lines[k])&&zt.length) break; const m=lines[k].match(/(\d{2})\s*[:.\s]\s*(\d{2})\s*[:.\s]\s*(\d{2})/); if(m&&+m[2]<60&&+m[3]<60) zt.push(sec(m)); }
+  for(;k<lines.length&&zt.length<5;k++){ if(P.test(lines[k])&&zt.length) break; const m=lines[k].match(/(\d{2})\s*[:.\s]\s*(\d{2})\s*[:.\s]\s*(\d{2})/); if(m) zt.push(+m[2]<60&&+m[3]<60 ? sec(m) : null); }
   if(zt.length===5){ const [warmup,intensive,aerobic,anaerobic,vo2max]=zt; out.hrZones={warmup,intensive,aerobic,anaerobic,vo2max}; i=k; }
   // pace card (avg / best) then splits
   const pc=find(i,l=>(l.match(/\d{1,2}\s*'\s*\d{2}/g)||[]).length>=2?1:null,10); if(pc) i=pc.k+1;
   const sp=[];
   for(k=i;k<Math.min(lines.length,i+25);k++){
-    if(/ケイデンス|時間/.test(C[k])&&sp.length) break;
-    const m=lines[k].match(/^\D{0,3}(\d{1,2})\D{0,8}?(\d{1,2})\s*'\s*(\d{2})/);
-    if(m&&+m[1]===sp.length+1){ sp.push(+m[2]*60+ +m[3]); i=k+1; }
+    if(/ケイデンス|時間|km\|/.test(C[k])&&sp.length) break;
+    const c = C[k].replace(/"/g,"");
+    const m = c.match(/(\d{1,3})'(\d{2})/); if(!m) continue;
+    const idx = sp.length+1, pre = c.slice(0, m.index), pd = (pre.match(/\d+/g)||[]).pop();
+    let mins = +m[1];
+    if(pd!=null && +pd===idx){}                                            // 「1 5'28」
+    else if(m[1].length>=2 && m[1].startsWith(String(idx))) mins = +m[1].slice(String(idx).length); // 「15'28」
+    else if(pd!=null && +pd!==idx) continue;
+    const v = mins*60 + +m[2];
+    if(v>=150 && v<=900){ sp.push(v); i=k+1; }
   }
   if(sp.length) out.splits=sp;
   // cadence: first line with 2 ints in 100-260
@@ -455,12 +478,14 @@ function parseMiFitness(raw){
   if(st){ out.strideCm=st.r[0]; i=st.k+1; }
   // training effect: a lone d.d
   const te=find(i,(l,c)=>{const m=c.match(/^[^\d]{0,3}([0-5])\.(\d)[^\d]{0,3}$/); return m?+(m[1]+"."+m[2]):null;},12);
-  if(te){ out.trainingEffect=te.r; i=te.k+1; }
+  if(te){ out.trainingEffect=te.r; i=te.k+1;
+    const lab = find(te.k,(l,c)=>{ const m=c.match(/大幅に向上|大きく向上|向上|維持|回復|過負荷|効果なし|最小限/); return m?m[0]:null; },3);
+    if(lab) out.trainingEffectLabel = lab.r; }
   // vo2max + load: line with ml or two ints where first 20-90
   const vo=find(i,(l)=>{ const m=l.match(/(\d{2})\s*m[il1]/i); const n=ints(l); if(m){const load=n.filter(x=>x!==+m[1]&&x<=1000).pop(); return {v:+m[1],load};} return null;},12);
   if(vo){ out.vo2max=vo.r.v; if(vo.r.load!=null) out.trainingLoad=vo.r.load; i=vo.k+1; }
   const rec=find(i,(l)=>{const m=l.match(/^\D{0,2}(\d{1,3})\s*\S*\s*\+\s*(\d+)/)||l.match(/(\d{1,3})\s*時間/); return m&&+m[1]<=200?+m[1]:null;},6);
-  if(rec) out.recoveryHours=rec.r;
+  if(rec){ out.recoveryHours=rec.r; const v = lines[rec.k].match(/([+\-])\s*(\d{1,3})(?!\d)/); if(v) out.vitality = (v[1]==="-"?-1:1)*+v[2]; }
   // fallbacks
   if(out.distanceKm==null&&out.durationSec&&out.paceSec) out.distanceKm=Math.round(out.durationSec/out.paceSec*100)/100;
   if(out.paceSec==null&&out.distanceKm&&out.durationSec) out.paceSec=Math.round(out.durationSec/out.distanceKm);
@@ -505,7 +530,20 @@ function openRunForm(r, existingId){
       <div class="field"><label for="fCad">ケイデンス</label><input id="fCad" inputmode="numeric" value="${r.cadence??""}"></div>
       <div class="field"><label for="fStr">ストライド cm</label><input id="fStr" inputmode="numeric" value="${r.strideCm??""}"></div>
     </div>
+    <div class="grid2">
+      <div class="field"><label for="fPace">平均ペース /km（例 5:36）</label><input id="fPace" value="${r.paceSec?paceTxt(r.paceSec):""}"></div>
+      <div class="field"><label for="fCal">活動 kcal</label><input id="fCal" inputmode="numeric" value="${r.calories??""}"></div>
+    </div>
     <div class="field"><label for="fSplits">km毎のペース（例 5:28 5:40 5:51）</label><input id="fSplits" value="${esc((r.splits||[]).map(paceTxt).join(" "))}"></div>
+    <div class="card"><div class="flabel">トレーニング効果・回復</div>
+      <div class="grid2">
+        <div class="field"><label for="fTE">トレーニング効果</label><input id="fTE" inputmode="decimal" value="${r.trainingEffect??""}"></div>
+        <div class="field"><label for="fTEL">効果の評価（例 向上）</label><input id="fTEL" value="${esc(r.trainingEffectLabel||"")}"></div>
+        <div class="field"><label for="fVO2">最大酸素摂取量 ml/kg/min</label><input id="fVO2" inputmode="decimal" value="${r.vo2max??""}"></div>
+        <div class="field"><label for="fLoad">トレーニング負荷</label><input id="fLoad" inputmode="numeric" value="${r.trainingLoad??""}"></div>
+        <div class="field"><label for="fRec">回復 時間</label><input id="fRec" inputmode="numeric" value="${r.recoveryHours??""}"></div>
+        <div class="field"><label for="fVit">活力スコア（例 +28）</label><input id="fVit" inputmode="numeric" value="${r.vitality!=null?(r.vitality>0?"+":"")+r.vitality:""}"></div>
+      </div></div>
     ${feelFields(r)}
     <div class="field"><label for="fMemo">メモ（天気・体調など）</label><textarea id="fMemo" rows="2">${esc(r.memo||"")}</textarea></div>
     <div class="note small" id="fErr" hidden></div>
@@ -527,11 +565,12 @@ function openRunForm(r, existingId){
       const splits = $("fSplits").value.split(/[\s,、]+/).map(parseDur).filter(n=>n && n>120 && n<1200);
       const data = {
         date, startAt: t ? `${startDay} ${t}` : (r.startAt||null), distanceKm: dist, durationSec: dur,
-        paceSec: dist && dur ? Math.round(dur/dist) : (r.paceSec??null),
+        paceSec: parseDur($("fPace").value) || (dist && dur ? Math.round(dur/dist) : (r.paceSec??null)),
         avgHr: num($("fHr").value), maxHr: num($("fMax").value), cadence: num($("fCad").value), strideCm: num($("fStr").value),
-        calories: r.calories??null, steps: r.steps??null, maxCadence: r.maxCadence??null, splits,
-        hrZones: r.hrZones||null, trainingEffect: r.trainingEffect??null, vo2max: r.vo2max??null, trainingLoad: r.trainingLoad??null,
-        recoveryHours: r.recoveryHours??null,
+        calories: num($("fCal").value), steps: r.steps??null, maxCadence: r.maxCadence??null, splits,
+        hrZones: r.hrZones||null, trainingEffect: num($("fTE").value), trainingEffectLabel: $("fTEL").value.trim() || null,
+        vo2max: num($("fVO2").value), trainingLoad: num($("fLoad").value),
+        recoveryHours: num($("fRec").value), vitality: num(String($("fVit").value).replace(/^\+/,"")),
         rpe: feel.rpe, fatigue: feel.fatigue, pain: $("fPain").checked, memo: $("fMemo").value.trim(),
         createdAt: r.createdAt || jstNowText()
       };
@@ -728,7 +767,7 @@ function runDetail(r){
     `心拍 平均${r.avgHr??"?"}・最大${r.maxHr??"?"}${hrSuspicious(r)?"（手首計測の誤差の可能性あり）":""}／ケイデンス ${r.cadence??"?"}／ストライド ${r.strideCm??"?"}cm`,
     (r.splits||[]).length ? `km毎ペース：${r.splits.map(fmtPace).join(" ")}` : "",
     r.hrZones ? `心拍ゾーン（Mi Fitness）：ウォームアップ${fmtDur(r.hrZones.warmup)||"0"} インテンシブ${fmtDur(r.hrZones.intensive)||"0"} 有酸素${fmtDur(r.hrZones.aerobic)||"0"} 無酸素${fmtDur(r.hrZones.anaerobic)||"0"} 最大${fmtDur(r.hrZones.vo2max)||"0"}` : "",
-    [r.vo2max?`VO2max ${r.vo2max}`:"", r.trainingLoad?`トレーニング負荷 ${r.trainingLoad}`:"", r.trainingEffect?`有酸素効果 ${r.trainingEffect}`:"", r.recoveryHours?`回復 ${r.recoveryHours}時間`:""].filter(Boolean).join("／"),
+    [r.vo2max?`VO2max ${r.vo2max}`:"", r.trainingLoad?`トレーニング負荷 ${r.trainingLoad}`:"", r.trainingEffect?`トレーニング効果 ${r.trainingEffect}${r.trainingEffectLabel?"（"+r.trainingEffectLabel+"）":""}`:"", r.recoveryHours?`回復 ${r.recoveryHours}時間`:"", r.vitality!=null?`活力スコア ${r.vitality>0?"+":""}${r.vitality}`:"", r.calories?`活動 ${r.calories}kcal`:""].filter(Boolean).join("／"),
     `体感強度 ${r.rpe??"未入力"}/10／疲労度 ${r.fatigue??"未入力"}/5／痛み・違和感 ${hasPain(r)?"あり":"なし"}${r.memo?`／メモ：${r.memo}`:""}`
   ].filter(Boolean).join("\n");
 }
