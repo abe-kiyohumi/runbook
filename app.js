@@ -1,6 +1,6 @@
 /* ランニング手帳 — standalone version. All data stays on this phone (localStorage). No AI service is used. */
 "use strict";
-const APP_VERSION = "2.0";
+const APP_VERSION = "2.1";
 
 /* ---------- constants ---------- */
 const TYPES = {
@@ -1003,6 +1003,24 @@ $("next").onclick = ()=>{ S.view.m++; if(S.view.m>11){S.view.m=0;S.view.y++;} re
 $("todayBtn").onclick = ()=>{ const t = fromKey(logicalToday()); S.view={y:t.getUTCFullYear(),m:t.getUTCMonth()}; S.sel=logicalToday(); render(); };
 document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeSheet(); });
 document.addEventListener("visibilitychange", ()=>{ if(!document.hidden){ maybeAuto(); render(); } });
+
+/* 画面の上で下に引っぱると更新 */
+(()=>{
+  const el = $("ptr"); let y0 = null, dist = 0, busy = false;
+  const TH = 80;
+  const show = d => { const t = Math.min(d, 120); el.style.transform = `translateY(${t-60}px) rotate(${t*3}deg)`; el.style.opacity = Math.min(1, t/TH); };
+  document.addEventListener("touchstart", e=>{ if(busy || $("sheetRoot").firstChild || window.scrollY>0 || e.touches.length!==1){ y0=null; return; } y0 = e.touches[0].clientY; dist = 0; el.style.transition = "none"; }, {passive:true});
+  document.addEventListener("touchmove", e=>{ if(y0==null) return; dist = (e.touches[0].clientY - y0) * 0.55; if(dist<=0 || window.scrollY>0){ el.style.opacity = 0; return; } show(dist); }, {passive:true});
+  document.addEventListener("touchend", async()=>{
+    if(y0==null) return; y0 = null;
+    el.style.transition = "transform .2s, opacity .2s";
+    if(dist >= TH){
+      busy = true; el.classList.add("spinning"); el.style.transform = "translateY(20px)"; el.style.opacity = 1;
+      try{ const reg = await navigator.serviceWorker?.getRegistration(); await reg?.update(); }catch(e){}
+      setTimeout(()=>location.reload(), 300);
+    } else { el.style.transform = "translateY(-70px)"; el.style.opacity = 0; }
+  });
+})();
 
 maybeAuto();
 render();

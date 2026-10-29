@@ -161,6 +161,9 @@ ul.clean{margin:0;padding-left:1.1em;display:flex;flex-direction:column;gap:4px}
 .kv{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(140px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:8px 14px;border-radius:999px;font-size:13px;z-index:60;font-weight:700}
 .banner{display:flex;gap:10px;align-items:center;background:var(--accent-soft);border-radius:10px;padding:10px 12px;font-size:13px}
+.ptr{position:fixed;left:50%;top:calc(env(safe-area-inset-top,0px) + 8px);z-index:35;width:40px;height:40px;margin-left:-20px;border-radius:50%;background:var(--surface);box-shadow:0 2px 10px rgba(0,0,0,.18);display:grid;place-items:center;color:var(--accent);transform:translateY(-70px);opacity:0;pointer-events:none}
+.ptr svg{width:22px;height:22px}
+.ptr.spinning svg{animation:sp .8s linear infinite}
 </style>
 </head>
 <body>
@@ -187,6 +190,7 @@ ul.clean{margin:0;padding-left:1.1em;display:flex;flex-direction:column;gap:4px}
 </nav>
 
 <div id="sheetRoot"></div>
+<div class="ptr" id="ptr" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4v5h-5"/></svg></div>
 
 <script src="app.js"></script>
 </body>
