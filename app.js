@@ -354,76 +354,117 @@ function loadTesseract(){
 }
 async function prepImage(file){
   const bmp = await createImageBitmap(file);
-  const scale = bmp.width < 1000 ? 1100/bmp.width : 1;
-  const c = document.createElement("canvas");
-  c.width = Math.round(bmp.width*scale); c.height = Math.round(bmp.height*scale);
-  const g = c.getContext("2d");
-  g.filter = "grayscale(1) contrast(1.25)";
-  g.drawImage(bmp,0,0,c.width,c.height);
-  return c;
+  const scale = bmp.width < 1000 ? 1100/bmp.width : (bmp.width > 1400 ? 1300/bmp.width : 1);
+  const W = Math.round(bmp.width*scale), H = Math.round(bmp.height*scale);
+  // 縦に長い画像はカードの間の余白で区切って分割する（iPhoneのキャンバス上限と読み取り精度のため）
+  const probe = document.createElement("canvas"); probe.width = W; probe.height = 1;
+  const pg = probe.getContext("2d", {willReadFrequently:true});
+  const rowBlank = y => { if(y<=0||y>=H) return false; pg.clearRect(0,0,W,1); pg.drawImage(bmp, 0, y/scale, bmp.width, Math.max(1,1/scale), 0, 0, W, 1); const d = pg.getImageData(0,0,W,1).data; let mn=255, mx=0; for(let x=0;x<d.length;x+=16){ const v=(d[x]+d[x+1]+d[x+2])/3; if(v<mn)mn=v; if(v>mx)mx=v; } return mx-mn < 14; };
+  const piece = 2400, cuts = [0];
+  while(H - cuts[cuts.length-1] > piece*1.3){
+    const target = cuts[cuts.length-1] + piece; let cut = target;
+    for(let o=0;o<600;o+=3){ if(rowBlank(target+o)){ cut = target+o; break; } if(rowBlank(target-o)){ cut = target-o; break; } }
+    cuts.push(cut);
+  }
+  cuts.push(H);
+  const out = [];
+  for(let i=0;i<cuts.length-1;i++){
+    const c = document.createElement("canvas"); c.width = W; c.height = cuts[i+1]-cuts[i];
+    const g = c.getContext("2d", {willReadFrequently:true}); g.fillStyle = "#fff"; g.fillRect(0,0,W,c.height);
+    g.drawImage(bmp, 0, cuts[i]/scale, bmp.width, c.height/scale, 0, 0, W, c.height);
+    // 白黒にする。色の濃い部分（緑のバーなど）は黒にして、上の白い文字を読めるようにする
+    const img = g.getImageData(0,0,W,c.height), d = img.data;
+    for(let k=0;k<d.length;k+=4){ const r=d[k],gg=d[k+1],b=d[k+2]; const mx=Math.max(r,gg,b), mn=Math.min(r,gg,b); const v = (mx-mn>60) ? 0 : (r*0.299+gg*0.587+b*0.114); d[k]=d[k+1]=d[k+2]=v; }
+    g.putImageData(img,0,0);
+    out.push(c);
+  }
+  return out;
 }
+let lastOcrText = "";
 async function ocrScreenshot(file, onProgress){
   await loadTesseract();
-  const worker = await Tesseract.createWorker(["jpn","eng"], 1, {logger: m => { if(m.status==="recognizing text") onProgress(Math.round(m.progress*100)); else if(/loading|initializ/.test(m.status)) onProgress(-1); }});
+  let done = 0, parts = 1;
+  const worker = await Tesseract.createWorker(["jpn","eng"], 1, {logger: m => { if(m.status==="recognizing text") onProgress(Math.round((done + m.progress)/parts*100)); }});
   try{
-    const canvas = await prepImage(file);
-    const { data } = await worker.recognize(canvas);
-    return parseMiFitness(data.text);
+    const pieces = await prepImage(file); parts = pieces.length;
+    let text = "";
+    for(const c of pieces){ const { data } = await worker.recognize(c); text += data.text + "\n"; done++; }
+    lastOcrText = text;
+    return parseMiFitness(text);
   } finally { worker.terminate(); }
 }
-
 function normalizeOcr(t){
-  const circ = "⓪①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳";
-  t = t.replace(/[⓪①-⑳]/g,c=>String(circ.indexOf(c)));
-  t = t.replace(/[０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0));
-  return t.replace(/[：]/g,":").replace(/[．。]/g,".").replace(/[’′‘`´]/g,"'").replace(/[”″“]/g,'"');
+  const circ="⓪①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳";
+  t=t.replace(/[⓪①-⑳]/g,c=>String(circ.indexOf(c)));
+  t=t.replace(/[０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0));
+  t=t.replace(/[：]/g,":").replace(/[．。・]/g,".").replace(/[’′‘`´°]/g,"'").replace(/[”″“]/g,'"');
+  // digits split by single spaces inside numbers like "1 6 4" are rare; join digit-space-digit only when both sides are single digits
+  return t;
 }
 function parseMiFitness(raw){
-  const text = normalizeOcr(raw);
-  const lines = text.split(/\n/).map(l=>l.trim()).filter(Boolean);
-  const C = lines.map(l=>l.replace(/\s+/g,""));
-  const out = {};
-  const nums = l => (l.match(/\d+(?:\.\d+)?/g)||[]).map(Number);
-  const tre = /(\d{1,2})[:.](\d{2})[:.](\d{2})/;
-  const tsec = m => +m[1]*3600 + +m[2]*60 + +m[3];
-  const dm = text.match(/(20\d\d)\s*[\/.\-]\s*(\d{1,2})\s*[\/.\-]\s*(\d{1,2})\s+(\d{1,2})\s*:\s*(\d{2})/);
-  if(dm) out.startAt = `${dm[1]}-${pad(dm[2])}-${pad(dm[3])} ${pad(dm[4])}:${dm[5]}`;
-  const di = lines.findIndex(l=>tre.test(l));
+  const lines=normalizeOcr(raw).split(/\n/).map(l=>l.trim()).filter(Boolean);
+  const C=lines.map(l=>l.replace(/\s+/g,""));
+  const out={};
+  const ints=l=>(l.match(/\d+/g)||[]).map(Number);
+  const T=/(\d{1,2})\s*[:.]\s*(\d{2})\s*[:.]\s*(\d{2})/;
+  const P=/(\d{1,2})\s*'\s*(\d{2})\s*"?/;
+  const sec=m=>+m[1]*3600+ +m[2]*60+ +m[3];
+  // date & start
+  for(const c of C){const m=c.match(/(20\d\d)[\/.\-年](\d{1,2})[\/.\-月](\d{1,2})日?(\d{1,2}):(\d{2})/); if(m){out.startAt=`${m[1]}-${pad(m[2])}-${pad(m[3])} ${pad(m[4])}:${m[5]}`;break;}}
+  // workout time = first h:mm:ss
+  let di=lines.findIndex(l=>T.test(l));
   if(di>=0){
-    const m = lines[di].match(tre); out.durationSec = tsec(m);
-    const after = nums(lines[di].slice(lines[di].indexOf(m[0])+m[0].length)).filter(n=>n>=20&&n<=3000&&Number.isInteger(n));
-    if(after.length) out.calories = after[0];
-    for(let i=di;i>=Math.max(0,di-6);i--){
-      const src = i===di ? lines[i].slice(0,lines[i].indexOf(m[0])) : lines[i];
-      const d = src.match(/(\d{1,2})[.,](\d{2})(?!\d)/);
-      if(d){ const v = +(d[1]+"."+d[2]); if(v>0.2 && v<60){ out.distanceKm = v; break; } }
+    const m=lines[di].match(T); out.durationSec=sec(m);
+    const after=ints(lines[di].slice(lines[di].indexOf(m[0])+m[0].length)).filter(n=>n>=20&&n<=3000);
+    if(after.length) out.calories=after[0];
+    // distance: look upward for d.dd (or ddd followed by km)
+    for(let i=di;i>=0&&i>=di-10;i--){
+      let src=i===di?lines[i].slice(0,lines[i].indexOf(m[0])):lines[i];
+      if(/20\d\d[\/.\-]/.test(src)) src=src.replace(/20\d\d[\/.\-]\d{1,2}[\/.\-]\d{1,2}\d{0,2}:?\d{0,2}/,"");
+      let d=src.match(/(?<![\d.])(\d{1,2})[.,](\d{1,2})(?![\d:])/);
+      if(!d){const k=src.match(/(?<!\d)(\d)(\d{2})k?m/i); if(k) d=[k[0],k[1],k[2]];}
+      if(d){const v=+(d[1]+"."+d[2].padEnd(2,"0")); if(v>0.2&&v<60){out.distanceKm=v;break;}}
     }
+  } else di=0;
+  // after workout time: sequential structure
+  let i=di+1;
+  const find=(from,fn,limit=40)=>{for(let k=from;k<Math.min(lines.length,from+limit);k++){const r=fn(lines[k],C[k],k); if(r) return {k,r};} return null;};
+  const pace=find(i,(l)=>{const m=l.match(P); if(!m) return null; const rest=ints(l.slice(l.indexOf(m[0])+m[0].length)); return {pace:+m[1]*60+ +m[2],hr:rest.find(n=>n>=60&&n<=230),steps:rest.find(n=>n>=300)};},8);
+  if(pace){out.paceSec=pace.r.pace; if(pace.r.hr) out.avgHr=pace.r.hr; if(pace.r.steps) out.steps=pace.r.steps; i=pace.k+1;}
+  // heart card: first line after pace with 2 ints in HR range and nothing like time/pace
+  const hr=find(i,(l)=>{ if(T.test(l)||P.test(l)) return null; const n=ints(l).filter(x=>x>=60&&x<=230); return n.length>=2&&ints(l).length<=3? n:null;},12);
+  if(hr){ out.avgHr=out.avgHr||hr.r[0]; out.maxHr=hr.r[1]; i=hr.k+1; }
+  // zones: next 5 time strings
+  const zt=[];let k=i;
+  for(;k<lines.length&&zt.length<5;k++){ if(P.test(lines[k])&&zt.length) break; const m=lines[k].match(/(\d{2})\s*[:.\s]\s*(\d{2})\s*[:.\s]\s*(\d{2})/); if(m&&+m[2]<60&&+m[3]<60) zt.push(sec(m)); }
+  if(zt.length===5){ const [warmup,intensive,aerobic,anaerobic,vo2max]=zt; out.hrZones={warmup,intensive,aerobic,anaerobic,vo2max}; i=k; }
+  // pace card (avg / best) then splits
+  const pc=find(i,l=>(l.match(/\d{1,2}\s*'\s*\d{2}/g)||[]).length>=2?1:null,10); if(pc) i=pc.k+1;
+  const sp=[];
+  for(k=i;k<Math.min(lines.length,i+25);k++){
+    if(/ケイデンス|時間/.test(C[k])&&sp.length) break;
+    const m=lines[k].match(/^\D{0,3}(\d{1,2})\D{0,8}?(\d{1,2})\s*'\s*(\d{2})/);
+    if(m&&+m[1]===sp.length+1){ sp.push(+m[2]*60+ +m[3]); i=k+1; }
   }
-  const pre = /(\d{1,2})\s*'\s*(\d{2})\s*"?/;
-  const pi = lines.findIndex((l,i)=>i>=Math.max(0,di) && pre.test(l));
-  if(pi>=0){
-    const m = lines[pi].match(pre); out.paceSec = +m[1]*60 + +m[2];
-    const rest = nums(lines[pi].slice(lines[pi].indexOf(m[0])+m[0].length));
-    const hr = rest.find(n=>n>=60&&n<=230&&Number.isInteger(n)); if(hr) out.avgHr = hr;
-    const st = rest.find(n=>n>=500&&Number.isInteger(n)); if(st) out.steps = st;
-  }
-  const hi = C.findIndex(c=>/心拍数\(?bpm/i.test(c));
-  if(hi>=0){ for(let i=hi+1;i<Math.min(lines.length,hi+4);i++){ const n = nums(lines[i]).filter(x=>x>=60&&x<=230&&Number.isInteger(x)); if(n.length>=2){ out.avgHr = out.avgHr||n[0]; out.maxHr = n[1]; break; } } }
-  const zstart = hi>=0 ? hi : (di>=0 ? di+1 : 0);
-  const zt = []; const zre = /(\d{2})\s*[:.\s]\s*(\d{2})\s*[:.\s]\s*(\d{2})/;
-  for(let i=zstart+1;i<lines.length && zt.length<5;i++){ if(/ケイデンス|km毎/.test(C[i]) && zt.length) break; const m = lines[i].match(zre); if(m && +m[2]<60 && +m[3]<60) zt.push(tsec(m)); }
-  if(zt.length===5){ const [warmup,intensive,aerobic,anaerobic,vo2max] = zt; out.hrZones = {warmup,intensive,aerobic,anaerobic,vo2max}; }
-  const ki = C.findIndex(c=>/km毎/.test(c));
-  if(ki>=0){ const sp = []; for(let i=ki+1;i<Math.min(lines.length,ki+60);i++){ if(/時間|ケイデンス/.test(C[i])) break; const m = lines[i].match(/^\D{0,3}(\d{1,2})\D{1,6}?(\d{1,2})\s*'\s*(\d{2})/); if(m && +m[1]===sp.length+1) sp.push(+m[2]*60 + +m[3]); } if(sp.length) out.splits = sp; }
-  const numsBefore = (re,lo,hi2)=>{ const i = C.findIndex(c=>re.test(c)); if(i<1) return null; for(let j=i-1;j>=Math.max(0,i-2);j--){ const n = nums(lines[j]).filter(x=>x>=lo&&x<=hi2&&Number.isInteger(x)); if(n.length) return n; } return null; };
-  const cad = numsBefore(/平均ケイデンス|ケイデンス.*ケイデンス/,100,260); if(cad){ out.cadence = cad[0]; if(cad[1]) out.maxCadence = cad[1]; }
-  const str = numsBefore(/平均ストライド|ストライド.*ストライド/,30,250); if(str) out.strideCm = str[0];
-  const vi = lines.findIndex(l=>/ml\s*\/?\s*kg/i.test(l));
-  if(vi>=0){ const m = lines[vi].match(/(\d{2})\s*ml/i); if(m) out.vo2max = +m[1]; const after = nums(lines[vi].slice(lines[vi].search(/kg/i))).filter(n=>n>=1&&n<=1000&&Number.isInteger(n)); if(after.length) out.trainingLoad = after[after.length-1]; }
-  const ri = lines.findIndex(l=>/\d+\s*時間/.test(l)); if(ri>=0){ const m = lines[ri].match(/(\d+)\s*時間/); if(+m[1]<=200) out.recoveryHours = +m[1]; }
-  const ti = C.findIndex(c=>/トレーニング効果/.test(c));
-  if(ti>=0){ for(let i=ti;i<Math.min(lines.length,ti+6);i++){ const m = C[i].match(/(?<![\d.])([0-5])\.(\d)(?!\d)/); if(m){ out.trainingEffect = +(m[1]+"."+m[2]); break; } } }
-  if(out.paceSec==null && out.distanceKm && out.durationSec) out.paceSec = Math.round(out.durationSec/out.distanceKm);
+  if(sp.length) out.splits=sp;
+  // cadence: first line with 2 ints in 100-260
+  const cad=find(i,(l)=>{ if(T.test(l)) return null; const n=ints(l); const c=n.filter(x=>x>=100&&x<=260); return c.length>=2&&n.length<=3?c:null;},20);
+  if(cad){ out.cadence=cad.r[0]; out.maxCadence=cad.r[1]; i=cad.k+1; }
+  // stride: next line with 2 ints 30-250 (avg<max)
+  const st=find(i,(l)=>{ if(T.test(l)) return null; const n=ints(l); const c=n.filter(x=>x>=30&&x<=250); return c.length>=2&&n.length<=3&&c[0]<=c[1]?c:null;},12);
+  if(st){ out.strideCm=st.r[0]; i=st.k+1; }
+  // training effect: a lone d.d
+  const te=find(i,(l,c)=>{const m=c.match(/^[^\d]{0,3}([0-5])\.(\d)[^\d]{0,3}$/); return m?+(m[1]+"."+m[2]):null;},12);
+  if(te){ out.trainingEffect=te.r; i=te.k+1; }
+  // vo2max + load: line with ml or two ints where first 20-90
+  const vo=find(i,(l)=>{ const m=l.match(/(\d{2})\s*m[il1]/i); const n=ints(l); if(m){const load=n.filter(x=>x!==+m[1]&&x<=1000).pop(); return {v:+m[1],load};} return null;},12);
+  if(vo){ out.vo2max=vo.r.v; if(vo.r.load!=null) out.trainingLoad=vo.r.load; i=vo.k+1; }
+  const rec=find(i,(l)=>{const m=l.match(/^\D{0,2}(\d{1,3})\s*\S*\s*\+\s*(\d+)/)||l.match(/(\d{1,3})\s*時間/); return m&&+m[1]<=200?+m[1]:null;},6);
+  if(rec) out.recoveryHours=rec.r;
+  // fallbacks
+  if(out.distanceKm==null&&out.durationSec&&out.paceSec) out.distanceKm=Math.round(out.durationSec/out.paceSec*100)/100;
+  if(out.paceSec==null&&out.distanceKm&&out.durationSec) out.paceSec=Math.round(out.durationSec/out.distanceKm);
+  if(out.splits&&out.distanceKm&&out.splits.length>Math.ceil(out.distanceKm)+1) delete out.splits;
   return out;
 }
 
@@ -468,8 +509,13 @@ function openRunForm(r, existingId){
     ${feelFields(r)}
     <div class="field"><label for="fMemo">メモ（天気・体調など）</label><textarea id="fMemo" rows="2">${esc(r.memo||"")}</textarea></div>
     <div class="note small" id="fErr" hidden></div>
-    <button class="btn primary" id="fSave">保存</button>`, sh=>{
+    <button class="btn primary" id="fSave">保存</button>
+    ${r._read && lastOcrText ? `<details class="card"><summary class="small" style="cursor:pointer;font-weight:700">読み取った文字を見る（うまく読めないときの確認用）</summary>
+      <div class="small muted">読み取りがうまくいかないときは、この文字をコピーして改善の相談に使えます。</div>
+      <button class="btn ghost" id="rawCopy" type="button">文字をコピー</button>
+      <textarea id="rawTxt" rows="8" readonly style="width:100%;font-size:12px">${esc(lastOcrText)}</textarea></details>` : ""}`, sh=>{
     const feel = bindFeel(sh, r);
+    const rc = $("rawCopy"); if(rc) rc.onclick = async()=>{ try{ await navigator.clipboard.writeText(lastOcrText); toast("コピーしました"); }catch(e){ const t=$("rawTxt"); t.focus(); t.select(); } };
     const relog = ()=>{ const t = $("fStart").value; const base = String(r.startAt||"").slice(0,10); if(t && base){ const k = logicalDateOf(`${base} ${t}`); if(k) $("fDate").value = k; } };
     $("fStart").onchange = relog;
     $("fSave").onclick = ()=>{
