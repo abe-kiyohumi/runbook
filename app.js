@@ -1,6 +1,6 @@
 /* ランニング手帳 — standalone version. All data stays on this phone (localStorage). No AI service is used. */
 "use strict";
-const APP_VERSION = "1.9";
+const APP_VERSION = "2.0";
 
 /* ---------- constants ---------- */
 const TYPES = {
@@ -175,10 +175,11 @@ function runCard(id,r){
   if(hasPain(r)) flags.push(`<span class="pill bad">痛み・違和感</span>`);
   if(!r.rpe || !r.fatigue) flags.push(`<span class="pill warn">体感を入力</span>`);
   const t = String(r.startAt||"").slice(11,16);
+  const ty = TYPES[runTypeOf(r)];
   return `<button class="runitem" data-run="${id}">
     <div class="dt"><b class="num">${r.distanceKm!=null?r1(r.distanceKm):"—"}</b><span class="small muted">km</span></div>
     <div class="mid"><div class="num" style="font-weight:700">${fmtDur(r.durationSec)} ・ ${fmtPace(r.paceSec)}/km${r.avgHr?` ・ ${r.avgHr} bpm`:""}</div>
-    <div class="small muted num">${t?t+" スタート":""}</div>
+    <div class="row small muted num" style="gap:6px"><span class="tag ${ty.cls}" style="font-size:10px;padding:1px 7px">${ty.label}</span>${t?t+" スタート":""}</div>
     <div class="row" style="flex-wrap:wrap;gap:4px;margin-top:4px">${flags.join("")}</div></div></button>`;
 }
 
@@ -323,15 +324,20 @@ function openRun(id){
     <div class="field"><label for="fMemo">メモ</label><textarea id="fMemo" rows="2">${esc(r.memo||"")}</textarea></div>
     <div class="btns"><button class="btn primary" id="rSave">保存</button><button class="btn ghost" id="rEdit">数値を直す</button><button class="btn danger" id="rDel">削除</button></div>`, sh=>{
     const feel = bindFeel(sh, r);
-    $("rSave").onclick = ()=>{ setRun(id,{...r, rpe:feel.rpe, fatigue:feel.fatigue, pain:$("fPain").checked, memo:$("fMemo").value.trim()}); closeSheet(); render(); toast("保存しました"); };
+    $("rSave").onclick = ()=>{ setRun(id,{...r, type:feel.type, rpe:feel.rpe, fatigue:feel.fatigue, pain:$("fPain").checked, memo:$("fMemo").value.trim()}); closeSheet(); render(); toast("保存しました"); };
     $("rEdit").onclick = ()=>openRunForm({...r}, id);
     const del = $("rDel");
     del.onclick = ()=>{ if(del.dataset.armed){ delRun(id); closeSheet(); render(); toast("記録を削除しました"); } else { del.dataset.armed="1"; del.textContent="もう一度押すと削除"; } };
   });
 }
 
+const runTypeOf = r => r.type || ((DB.plans[r.date] && DB.plans[r.date].type!=="rest") ? DB.plans[r.date].type : "easy");
 function feelFields(r){
-  return `<div class="card"><div class="flabel">体感強度（10段階）</div>
+  const cur = runTypeOf(r);
+  return `<div class="card"><div class="flabel">練習の種類</div>
+    <div class="types" id="rtype">${Object.entries(TYPES).filter(([id])=>id!=="rest").map(([id,t])=>`<button type="button" class="${t.cls}" data-rtype="${id}" aria-pressed="${id===cur}">${t.label}</button>`).join("")}</div>
+    <div class="small muted">${DB.plans[r.date]&&!r.type?"この日の予定から選んでいます。違えば変えてください。":""}</div></div>
+  <div class="card"><div class="flabel">体感強度（10段階）</div>
     <div class="scale" id="rpe">${[...Array(10)].map((_,i)=>`<button data-v="${i+1}" aria-pressed="${r.rpe===i+1}" class="num">${i+1}</button>`).join("")}</div>
     <div class="scale-cap"><span>1 とても楽</span><span id="rpeCap">${r.rpe?RPE_CAP[r.rpe-1]:""}</span><span>10 限界</span></div>
     <div class="flabel" style="margin-top:6px">疲労度（5段階）</div>
@@ -340,7 +346,8 @@ function feelFields(r){
     <label class="toggle" for="fPain"><input type="checkbox" id="fPain" ${r.pain?"checked":""}>痛み・違和感がある</label></div>`;
 }
 function bindFeel(sh, r){
-  const st = {rpe:r.rpe||null, fatigue:r.fatigue||null};
+  const st = {rpe:r.rpe||null, fatigue:r.fatigue||null, type:runTypeOf(r)};
+  sh.querySelectorAll("[data-rtype]").forEach(b=>b.onclick=()=>{ st.type=b.dataset.rtype; sh.querySelectorAll("[data-rtype]").forEach(x=>x.setAttribute("aria-pressed",x===b)); });
   sh.querySelectorAll("#rpe button").forEach(b=>b.onclick=()=>{ st.rpe=+b.dataset.v; sh.querySelectorAll("#rpe button").forEach(x=>x.setAttribute("aria-pressed",x===b)); $("rpeCap").textContent=RPE_CAP[st.rpe-1]; });
   sh.querySelectorAll("#fat button").forEach(b=>b.onclick=()=>{ st.fatigue=+b.dataset.v; sh.querySelectorAll("#fat button").forEach(x=>x.setAttribute("aria-pressed",x===b)); $("fatCap").textContent=FATIGUE_CAP[st.fatigue-1]; });
   return st;
@@ -639,7 +646,7 @@ function openRunForm(r, existingId){
         hrZones: r.hrZones||null, trainingEffect: num($("fTE").value),
         vo2max: num($("fVO2").value), trainingLoad: num($("fLoad").value),
         recoveryHours: num($("fRec").value), vitality: num(String($("fVit").value).replace(/^\+/,"")),
-        rpe: feel.rpe, fatigue: feel.fatigue, pain: $("fPain").checked, memo: $("fMemo").value.trim(),
+        type: feel.type, rpe: feel.rpe, fatigue: feel.fatigue, pain: $("fPain").checked, memo: $("fMemo").value.trim(),
         createdAt: r.createdAt || jstNowText()
       };
       setRun(existingId || `${date.replace(/-/g,"")}-${Date.now().toString(36)}`, data);
@@ -658,7 +665,7 @@ function easyPaceRange(){
   return DEFAULT_EASY.slice();
 }
 const rangeTxt = ([a,b]) => `${paceTxt(a)}-${paceTxt(b)}`;
-function isEasyRun(r){ const p = DB.plans[r.date]; return !p || p.type==="easy" || p.type==="recovery"; }
+function isEasyRun(r){ const t = runTypeOf(r); return t==="easy" || t==="recovery"; }
 function km4Before(mon){ let s = 0; for(let i=0;i<4;i++) s += weekStats(addDays(mon,-7*i)).km; return s; }
 function longestBefore(mon){ return Object.values(DB.runs).filter(r=>r.date>=addDays(mon,-21) && r.date<=addDays(mon,6)).reduce((a,r)=>Math.max(a,r.distanceKm||0),0); }
 function buildWeeksUp(mon){ let n = 0; for(let i=0;i<4;i++){ const a = weekStats(addDays(mon,-7*i)).km, b = weekStats(addDays(mon,-7*(i+1))).km; if(a > b && b > 0) n++; else break; } return n; }
@@ -830,7 +837,7 @@ const getProfile = () => DB.profile || DEFAULT_PROFILE;
 function runDetail(r){
   const p = DB.plans[r.date];
   return [
-    `■ ${mdw(r.date)} ${String(r.startAt||"").slice(11,16)}開始（予定：${p?(TYPES[p.type]||TYPES.easy).label+(p.distanceKm?" "+p.distanceKm+"km":"")+(p.pace?" "+p.pace+"/km":""):"なし"}）`,
+    `■ ${mdw(r.date)} ${String(r.startAt||"").slice(11,16)}開始　種類：${TYPES[runTypeOf(r)].label}（予定：${p?(TYPES[p.type]||TYPES.easy).label+(p.distanceKm?" "+p.distanceKm+"km":"")+(p.pace?" "+p.pace+"/km":""):"なし"}）`,
     `距離 ${r.distanceKm??"?"}km／時間 ${fmtDur(r.durationSec)}／平均ペース ${fmtPace(r.paceSec)}/km`,
     `心拍 平均${r.avgHr??"?"}・最大${r.maxHr??"?"}${hrSuspicious(r)?"（手首計測の誤差の可能性あり）":""}／ケイデンス ${r.cadence??"?"}／ストライド ${r.strideCm??"?"}cm`,
     (r.splits||[]).length ? `km毎ペース：${r.splits.map(fmtPace).join(" ")}` : "",
