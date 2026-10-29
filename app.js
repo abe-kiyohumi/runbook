@@ -367,46 +367,85 @@ async function prepImage(file){
     cuts.push(cut);
   }
   cuts.push(H);
-  const out = [];
+  const pieces = [], bars = [];
   for(let i=0;i<cuts.length-1;i++){
     const c = document.createElement("canvas"); c.width = W; c.height = cuts[i+1]-cuts[i];
     const g = c.getContext("2d", {willReadFrequently:true}); g.fillStyle = "#fff"; g.fillRect(0,0,W,c.height);
     g.drawImage(bmp, 0, cuts[i]/scale, bmp.width, c.height/scale, 0, 0, W, c.height);
-    // 白黒にする。色の濃い部分（緑のバーなど）は黒にして、上の白い文字を読めるようにする
-    const img = g.getImageData(0,0,W,c.height), d = img.data;
-    const Hc = c.height;
+    const img = g.getImageData(0,0,W,c.height), d = img.data, Hc = c.height;
+    // 行ごとに、色の付いた横長の帯（km毎ペースの緑のバー）があるかを調べる
+    const info = new Array(Hc);
     for(let y=0;y<Hc;y++){
-      // 色付きのバー（km毎ペースの緑のバーなど）が横切る行を探す。白い文字が途切れても1本のバーとみなせるよう、短い切れ目は許す
-      const row = y*W*4; let best0=-1, best1=-1, run0=-1, last=-99, gap=0, barLumSum=0, barN=0;
+      const row = y*W*4; let b0=-1, b1=-1, run0=-1, last=-99, sum=0, n=0;
       for(let x=0;x<W;x++){
-        const k=row+x*4; const mx=Math.max(d[k],d[k+1],d[k+2]), mn=Math.min(d[k],d[k+1],d[k+2]);
-        if(mx-mn>60){ if(run0<0 || x-last>40) run0=x; last=x; if(last-run0 > best1-best0){ best0=run0; best1=last; } barLumSum += d[k]*0.299+d[k+1]*0.587+d[k+2]*0.114; barN++; }
+        const k=row+x*4, mx=Math.max(d[k],d[k+1],d[k+2]), mn=Math.min(d[k],d[k+1],d[k+2]);
+        if(mx-mn>60){ if(run0<0 || x-last>40) run0=x; last=x; if(last-run0 > b1-b0){ b0=run0; b1=last; } sum += d[k]*0.299+d[k+1]*0.587+d[k+2]*0.114; n++; }
       }
-      const bar = best1-best0 > W*0.25;
-      const th = bar ? (barLumSum/barN + 255)/2 : 0;
-      for(let x=0;x<W;x++){
-        const k=row+x*4, lum=d[k]*0.299+d[k+1]*0.587+d[k+2]*0.114;
-        // バーの中：白い文字→黒、バーの色→白
-        const v = (bar && x>=best0 && x<=best1) ? (lum>th ? 0 : 255) : lum;
-        d[k]=d[k+1]=d[k+2]=v;
-      }
+      info[y] = (b1-b0 > W*0.3) ? {b0, b1, th:(sum/n+255)/2} : null;
     }
+    // 連続した帯の行をまとめ、バーらしい高さのものだけ切り出す（グラフの塗りつぶしのような背の高いものは除く）
+    for(let y=0;y<Hc;){
+      if(!info[y]){ y++; continue; }
+      let y2 = y; while(y2+1<Hc && info[y2+1]) y2++;
+      const h = y2-y+1;
+      if(h >= W*0.022 && h <= W*0.08){
+        const x0 = Math.min(...info.slice(y,y2+1).map(o=>o.b0)), th = info[Math.floor((y+y2)/2)].th;
+        const cw = Math.round(W*0.32), S = 3;
+        const bc = document.createElement("canvas"); bc.width = cw*S; bc.height = h*S + 40;
+        const bg = bc.getContext("2d"); bg.fillStyle="#fff"; bg.fillRect(0,0,bc.width,bc.height);
+        const bi = bg.createImageData(cw, h), bd = bi.data;
+        for(let yy=0; yy<h; yy++) for(let xx=0; xx<cw; xx++){
+          const sk = ((y+yy)*W + Math.min(W-1, x0+xx))*4, tk = (yy*cw+xx)*4;
+          const lum = d[sk]*0.299+d[sk+1]*0.587+d[sk+2]*0.114;
+          const v = lum > th ? 0 : 255; bd[tk]=bd[tk+1]=bd[tk+2]=v; bd[tk+3]=255;
+        }
+        const tmp = document.createElement("canvas"); tmp.width=cw; tmp.height=h; tmp.getContext("2d").putImageData(bi,0,0);
+        bg.imageSmoothingEnabled = true; bg.drawImage(tmp, 0, 20, cw*S, h*S);
+        bars.push(bc);
+      }
+      y = y2+1;
+    }
+    // 本文はふつうの白黒で読む
+    for(let k=0;k<d.length;k+=4){ const v = d[k]*0.299+d[k+1]*0.587+d[k+2]*0.114; d[k]=d[k+1]=d[k+2]=v; }
     g.putImageData(img,0,0);
-    out.push(c);
+    pieces.push(c);
   }
-  return out;
+  return {pieces, bars};
 }
 let lastOcrText = "";
+// バーの文字（例 5'28"）を秒に。「'」が「1」や「7」と読まれることがあるので補正する
+function barPace(t){
+  const ok = (m,x) => (+x<60 && m*60 + +x >= 150 && m*60 + +x <= 900) ? m*60 + +x : null;
+  const e = t.match(/(\d{1,2})['’:](\d{2})/); if(e){ const v = ok(+e[1], e[2]); if(v) return v; }
+  const d = (t.match(/\d+/g)||[]).join("").slice(0,5);
+  if(d.length===3) return ok(+d[0], d.slice(1,3));
+  if(d.length===4) return (/[17]/.test(d[1]) && ok(+d[0], d.slice(2,4))) || ok(+d.slice(0,2), d.slice(2,4));
+  if(d.length===5) return ok(+d.slice(0,2), d.slice(3,5)) || ok(+d[0], d.slice(2,4));
+  return null;
+}
 async function ocrScreenshot(file, onProgress){
   await loadTesseract();
   let done = 0, parts = 1;
   const worker = await Tesseract.createWorker(["jpn","eng"], 1, {logger: m => { if(m.status==="recognizing text") onProgress(Math.round((done + m.progress)/parts*100)); }});
   try{
-    const pieces = await prepImage(file); parts = pieces.length;
+    const {pieces, bars} = await prepImage(file); parts = pieces.length + (bars.length ? 1 : 0);
     let text = "";
     for(const c of pieces){ const { data } = await worker.recognize(c); text += data.text + "\n"; done++; }
-    lastOcrText = text;
-    return parseMiFitness(text);
+    const out = parseMiFitness(text);
+    // km毎ペース：バーの中の文字を1本ずつ読む
+    let barText = "";
+    if(bars.length){
+      await worker.setParameters({tessedit_pageseg_mode: "7"});
+      const sp = [];
+      for(const bc of bars){
+        const { data } = await worker.recognize(bc); const t = normalizeOcr(data.text).replace(/\s+/g,"");
+        barText += t + "\n";
+        const v = barPace(t); if(v) sp.push(v);
+      }
+      if(sp.length && (!out.distanceKm || sp.length <= Math.ceil(out.distanceKm)+1)) out.splits = sp;
+    }
+    lastOcrText = text + (barText ? "\n--- km毎のバー ---\n" + barText : "");
+    return out;
   } finally { worker.terminate(); }
 }
 function normalizeOcr(t){
@@ -471,20 +510,20 @@ function parseMiFitness(raw){
   }
   if(sp.length) out.splits=sp;
   // cadence: first line with 2 ints in 100-260
-  const cad=find(i,(l)=>{ if(T.test(l)) return null; const n=ints(l); const c=n.filter(x=>x>=100&&x<=260); return c.length>=2&&n.length<=3?c:null;},20);
+  const cad=find(i,(l)=>{ if(T.test(l)) return null; const n=ints(l); const c=n.filter(x=>x>=100&&x<=260); return c.length>=2&&n.length<=3&&c[0]<=c[1]?c:null;},200);
   if(cad){ out.cadence=cad.r[0]; out.maxCadence=cad.r[1]; i=cad.k+1; }
   // stride: next line with 2 ints 30-250 (avg<max)
-  const st=find(i,(l)=>{ if(T.test(l)) return null; const n=ints(l); const c=n.filter(x=>x>=30&&x<=250); return c.length>=2&&n.length<=3&&c[0]<=c[1]?c:null;},12);
+  const st=find(i,(l)=>{ if(T.test(l)) return null; const n=ints(l); const c=n.filter(x=>x>=30&&x<=250); return c.length>=2&&n.length<=3&&c[0]<=c[1]?c:null;},60);
   if(st){ out.strideCm=st.r[0]; i=st.k+1; }
   // training effect: a lone d.d
-  const te=find(i,(l,c)=>{const m=c.match(/^[^\d]{0,3}([0-5])\.(\d)[^\d]{0,3}$/); return m?+(m[1]+"."+m[2]):null;},12);
+  const te=find(i,(l,c)=>{const m=c.match(/^[^\d]{0,3}([0-5])\.(\d)[^\d]{0,3}$/); return m?+(m[1]+"."+m[2]):null;},80);
   if(te){ out.trainingEffect=te.r; i=te.k+1;
     const lab = find(te.k,(l,c)=>{ const m=c.match(/大幅に向上|大きく向上|向上|維持|回復|過負荷|効果なし|最小限/); return m?m[0]:null; },3);
     if(lab) out.trainingEffectLabel = lab.r; }
   // vo2max + load: line with ml or two ints where first 20-90
-  const vo=find(i,(l)=>{ const m=l.match(/(\d{2})\s*m[il1]/i); const n=ints(l); if(m){const load=n.filter(x=>x!==+m[1]&&x<=1000).pop(); return {v:+m[1],load};} return null;},12);
+  const vo=find(i,(l)=>{ const m=l.match(/(\d{2})\s*m[il1]/i); const n=ints(l); if(m){const load=n.filter(x=>x!==+m[1]&&x<=1000).pop(); return {v:+m[1],load};} return null;},200);
   if(vo){ out.vo2max=vo.r.v; if(vo.r.load!=null) out.trainingLoad=vo.r.load; i=vo.k+1; }
-  const rec=find(i,(l)=>{const m=l.match(/^\D{0,2}(\d{1,3})\s*\S*\s*\+\s*(\d+)/)||l.match(/(\d{1,3})\s*時間/); return m&&+m[1]<=200?+m[1]:null;},6);
+  const rec=find(i,(l)=>{const m=l.match(/^\D{0,2}(\d{1,3})\s*\S*\s*\+\s*(\d+)/)||l.match(/(\d{1,3})\s*時間/); return m&&+m[1]<=200?+m[1]:null;},30);
   if(rec){ out.recoveryHours=rec.r; const v = lines[rec.k].match(/([+\-])\s*(\d{1,3})(?!\d)/); if(v) out.vitality = (v[1]==="-"?-1:1)*+v[2]; }
   // fallbacks
   if(out.distanceKm==null&&out.durationSec&&out.paceSec) out.distanceKm=Math.round(out.durationSec/out.paceSec*100)/100;
