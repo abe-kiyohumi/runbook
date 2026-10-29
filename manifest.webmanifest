@@ -1,0 +1,2 @@
+{"name":"ランニング手帳","short_name":"ラン手帳","start_url":"./","scope":"./","display":"standalone","background_color":"#f3f6f4","theme_color":"#17a078","lang":"ja",
+"icons":[{"src":"icon-192.png","sizes":"192x192","type":"image/png"},{"src":"icon-512.png","sizes":"512x512","type":"image/png"},{"src":"icon-512.png","sizes":"512x512","type":"image/png","purpose":"maskable"}]}
