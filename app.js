@@ -1,6 +1,6 @@
 /* ランニング手帳 — standalone version. All data stays on this phone (localStorage). No AI service is used. */
 "use strict";
-const APP_VERSION = "2.1";
+const APP_VERSION = "2.2";
 
 /* ---------- constants ---------- */
 const TYPES = {
@@ -198,7 +198,13 @@ function renderLog(){
     <button class="btn ghost" id="profSave">保存</button></div></div>`;
   const backup = prof + `<div class="section"><div class="card"><b>バックアップ</b>
     <div class="small muted">データはこのスマホの中だけに保存されています。機種変更やブラウザのデータ削除に備えて、ときどき書き出してください。</div>
-    <div class="btns"><button class="btn ghost" id="exportBtn">データを書き出す</button><label class="btn ghost" for="importFile" style="text-align:center">読み込む<input type="file" id="importFile" accept="application/json,.json" hidden></label></div></div></div>`;
+    <div class="btns"><button class="btn ghost" id="exportBtn">データを書き出す</button><label class="btn ghost" for="importFile" style="text-align:center">読み込む<input type="file" id="importFile" accept="application/json,.json" hidden></label></div></div></div>
+    <div class="section"><div class="card"><b>データの引っ越し（Safari ⇄ ホーム画面のアプリ）</b>
+    <div class="small muted">iPhoneでは、Safariで開いたときとホーム画面のアプリで開いたときで、保存場所が別々になっています。移したい側で「コピー」、移す先で「貼り付けて取り込む」を押してください。今ある記録は消えず、まとめて1つになります。</div>
+    <button class="btn ghost" id="moveCopy">このデータをコピー</button>
+    <div class="field"><label for="moveTxt">コピーしたデータを貼り付け</label><textarea id="moveTxt" rows="3" placeholder="ここに貼り付け"></textarea></div>
+    <button class="btn ghost" id="moveIn">貼り付けて取り込む</button>
+    <div class="small muted">${standalone ? "今はホーム画面のアプリで開いています。" : "今はSafariで開いています。"}記録 ${Object.keys(DB.runs).length}件・予定 ${Object.keys(DB.plans).length}件</div></div></div>`;
   let out = "";
   if(!list.length) out = `<div class="empty">まだ記録がありません。右下の＋からMi Fitnessのスクリーンショットを選ぶと、距離・ペース・心拍などを読み取って記録します。</div>`;
   let lastMonth = "";
@@ -969,6 +975,17 @@ function exportData(){
   if(navigator.canShare && navigator.canShare({files:[file]})){ navigator.share({files:[file], title:name}).catch(()=>{}); return; }
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
 }
+const standalone = (window.navigator.standalone === true) || (window.matchMedia && matchMedia("(display-mode: standalone)").matches);
+function mergeData(d){
+  if(!d || typeof d.runs!=="object" || typeof d.plans!=="object") throw 0;
+  const before = Object.keys(DB.runs).length;
+  Object.assign(DB.runs, d.runs);
+  for(const [k,v] of Object.entries(d.plans)){ const cur = DB.plans[k]; if(!cur || String(v.updatedAt||"") >= String(cur.updatedAt||"")) DB.plans[k] = v; }
+  for(const [k,v] of Object.entries(d.weeks||{})){ if(!DB.weeks[k]) DB.weeks[k] = v; }
+  if(d.profile && !DB.profile) DB.profile = d.profile;
+  persist(); render();
+  return Object.keys(DB.runs).length - before;
+}
 function importData(file){
   const fr = new FileReader();
   fr.onload = ()=>{ try{ const d = JSON.parse(fr.result); if(!d || typeof d.runs!=="object" || typeof d.plans!=="object") throw 0;
@@ -980,6 +997,8 @@ function importData(file){
 /* ---------- events ---------- */
 document.addEventListener("click", e=>{
   if(e.target.id==="exportBtn"){ exportData(); return; }
+  if(e.target.id==="moveCopy"){ const t = JSON.stringify(DB); navigator.clipboard.writeText(t).then(()=>toast("コピーしました。移す先で貼り付けてください")).catch(()=>{ const a=$("moveTxt"); a.value=t; a.focus(); a.select(); toast("文字を選択しました。コピーしてください"); }); return; }
+  if(e.target.id==="moveIn"){ try{ const n = mergeData(JSON.parse($("moveTxt").value.trim())); toast(`取り込みました（記録 +${n}件）`); }catch(err){ toast("貼り付けた内容を読み取れませんでした"); } return; }
   if(e.target.id==="profSave"){ DB.profile = $("profTxt").value.trim() || null; persist(); toast("プロフィールを保存しました"); return; }
   const t = e.target.closest("[data-day],[data-edit-plan],[data-new-run],[data-run],[data-gen],[data-apply],[data-dismiss],[data-plan4],[data-goto-weeks],[data-ask],[data-paste],.tab");
   if(!t) return;
