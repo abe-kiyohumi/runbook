@@ -1,6 +1,6 @@
 /* ランニング手帳 — standalone version. All data stays on this phone (localStorage). No AI service is used. */
 "use strict";
-const APP_VERSION = "1.6";
+const APP_VERSION = "1.7";
 
 /* ---------- constants ---------- */
 const TYPES = {
@@ -318,7 +318,7 @@ function openRun(id){
     </div>
     ${splits.length?`<div class="card"><div class="flabel">km毎のペース</div><div class="splits">${splits.map((s,i)=>`<div class="split num"><span>${i+1}</span><div class="bar"><i style="width:${30+70*(maxS-s)/Math.max(1,maxS-minS)}%"></i></div><span>${fmtPace(s)}</span></div>`).join("")}</div></div>`:""}
     ${zTot?`<div class="card"><div class="flabel">心拍ゾーン（Mi Fitness判定）</div><div class="splits">${zlist.filter(([z])=>zones[z]).map(([z,l])=>`<div class="split num" style="grid-template-columns:96px minmax(0,1fr) 48px"><span>${l}</span><div class="bar"><i style="width:${zones[z]/zTot*100}%;background:var(--c-threshold)"></i></div><span>${fmtDur(zones[z])}</span></div>`).join("")}</div><div class="small muted">手首の光学式心拍のため、明らかに外れた値はまとめで除外します。</div></div>`:""}
-    <div class="small muted num">${[r.vo2max?`VO2max ${r.vo2max}`:"", r.trainingLoad?`トレーニング負荷 ${r.trainingLoad}`:"", r.trainingEffect?`トレーニング効果 ${r.trainingEffect}${r.trainingEffectLabel?" "+esc(r.trainingEffectLabel):""}`:"", r.recoveryHours?`回復 ${r.recoveryHours}時間`:"", r.vitality!=null?`活力スコア ${r.vitality>0?"+":""}${r.vitality}`:"", r.calories?`${r.calories} kcal`:"", r.steps?`${r.steps}歩`:""].filter(Boolean).join(" ・ ")}</div>
+    <div class="small muted num">${[r.vo2max?`VO2max ${r.vo2max}`:"", r.trainingLoad?`トレーニング負荷 ${r.trainingLoad}`:"", r.trainingEffect?`効果の評価 ${r.trainingEffect}`:"", r.recoveryHours?`回復 ${r.recoveryHours}時間`:"", r.vitality!=null?`活力スコア ${r.vitality>0?"+":""}${r.vitality}`:"", r.calories?`${r.calories} kcal`:"", r.steps?`${r.steps}歩`:""].filter(Boolean).join(" ・ ")}</div>
     ${feelFields(r)}
     <div class="field"><label for="fMemo">メモ</label><textarea id="fMemo" rows="2">${esc(r.memo||"")}</textarea></div>
     <div class="btns"><button class="btn primary" id="rSave">保存</button><button class="btn ghost" id="rEdit">数値を直す</button><button class="btn danger" id="rDel">削除</button></div>`, sh=>{
@@ -575,10 +575,10 @@ function openRunForm(r, existingId){
       <div class="field"><label for="fCal">活動 kcal</label><input id="fCal" inputmode="numeric" value="${r.calories??""}"></div>
     </div>
     <div class="field"><label for="fSplits">km毎のペース（例 5:28 5:40 5:51）</label><input id="fSplits" value="${esc((r.splits||[]).map(paceTxt).join(" "))}"></div>
-    <div class="card"><div class="flabel">トレーニング効果・回復</div>
+    <div class="card"><div class="flabel">効果・回復</div>
       <div class="grid2">
-        <div class="field"><label for="fTE">トレーニング効果</label><input id="fTE" inputmode="decimal" value="${r.trainingEffect??""}"></div>
-        <div class="field"><label for="fTEL">効果の評価（例 向上）</label><input id="fTEL" value="${esc(r.trainingEffectLabel||"")}"></div>
+        <div class="field"><label for="fTE">効果の評価（例 3.6）</label><input id="fTE" inputmode="decimal" value="${r.trainingEffect??""}"></div>
+        <div class="field"></div>
         <div class="field"><label for="fVO2">最大酸素摂取量 ml/kg/min</label><input id="fVO2" inputmode="decimal" value="${r.vo2max??""}"></div>
         <div class="field"><label for="fLoad">トレーニング負荷</label><input id="fLoad" inputmode="numeric" value="${r.trainingLoad??""}"></div>
         <div class="field"><label for="fRec">回復 時間</label><input id="fRec" inputmode="numeric" value="${r.recoveryHours??""}"></div>
@@ -609,7 +609,7 @@ function openRunForm(r, existingId){
         paceSec: parseDur($("fPace").value) || (dist && dur ? Math.round(dur/dist) : (r.paceSec??null)),
         avgHr: num($("fHr").value), maxHr: num($("fMax").value), cadence: num($("fCad").value), strideCm: num($("fStr").value),
         calories: num($("fCal").value), steps: r.steps??null, maxCadence: r.maxCadence??null, splits,
-        hrZones: r.hrZones||null, trainingEffect: num($("fTE").value), trainingEffectLabel: $("fTEL").value.trim() || null,
+        hrZones: r.hrZones||null, trainingEffect: num($("fTE").value),
         vo2max: num($("fVO2").value), trainingLoad: num($("fLoad").value),
         recoveryHours: num($("fRec").value), vitality: num(String($("fVit").value).replace(/^\+/,"")),
         rpe: feel.rpe, fatigue: feel.fatigue, pain: $("fPain").checked, memo: $("fMemo").value.trim(),
@@ -808,7 +808,7 @@ function runDetail(r){
     `心拍 平均${r.avgHr??"?"}・最大${r.maxHr??"?"}${hrSuspicious(r)?"（手首計測の誤差の可能性あり）":""}／ケイデンス ${r.cadence??"?"}／ストライド ${r.strideCm??"?"}cm`,
     (r.splits||[]).length ? `km毎ペース：${r.splits.map(fmtPace).join(" ")}` : "",
     r.hrZones ? `心拍ゾーン（Mi Fitness）：ウォームアップ${fmtDur(r.hrZones.warmup)||"0"} インテンシブ${fmtDur(r.hrZones.intensive)||"0"} 有酸素${fmtDur(r.hrZones.aerobic)||"0"} 無酸素${fmtDur(r.hrZones.anaerobic)||"0"} 最大${fmtDur(r.hrZones.vo2max)||"0"}` : "",
-    [r.vo2max?`VO2max ${r.vo2max}`:"", r.trainingLoad?`トレーニング負荷 ${r.trainingLoad}`:"", r.trainingEffect?`トレーニング効果 ${r.trainingEffect}${r.trainingEffectLabel?"（"+r.trainingEffectLabel+"）":""}`:"", r.recoveryHours?`回復 ${r.recoveryHours}時間`:"", r.vitality!=null?`活力スコア ${r.vitality>0?"+":""}${r.vitality}`:"", r.calories?`活動 ${r.calories}kcal`:""].filter(Boolean).join("／"),
+    [r.vo2max?`VO2max ${r.vo2max}`:"", r.trainingLoad?`トレーニング負荷 ${r.trainingLoad}`:"", r.trainingEffect?`効果の評価 ${r.trainingEffect}`:"", r.recoveryHours?`回復 ${r.recoveryHours}時間`:"", r.vitality!=null?`活力スコア ${r.vitality>0?"+":""}${r.vitality}`:"", r.calories?`活動 ${r.calories}kcal`:""].filter(Boolean).join("／"),
     `体感強度 ${r.rpe??"未入力"}/10／疲労度 ${r.fatigue??"未入力"}/5／痛み・違和感 ${hasPain(r)?"あり":"なし"}${r.memo?`／メモ：${r.memo}`:""}`
   ].filter(Boolean).join("\n");
 }
